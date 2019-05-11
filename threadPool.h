@@ -1,12 +1,22 @@
 #ifndef __THREAD_POOL__
 #define __THREAD_POOL__
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+#include "osqueue.h"
+typedef enum {
+    NORMAL, WAIT, DONE,DESTROY
+} ACTIVATE_STATUS;
+
 
 typedef struct thread_pool
 {
- //The field x is here because a struct without fields
- //doesn't compile. Remove it once you add fields of your own
- int x;
- //TODO - FILL THIS WITH YOUR FIELDS
+ int numOfThreads;
+ OSQueue *osQueue;
+ pthread_t *threadsArray;
+ pthread_mutex_t lock;
+ pthread_cond_t cond;
+ ACTIVATE_STATUS activateStatus;
 }ThreadPool;
 
 ThreadPool* tpCreate(int numOfThreads);
