@@ -11,10 +11,16 @@
  * @param threadpool to free.
  */
 void freeThreadPool(ThreadPool *threadpool) {
-    int size = threadpool->numOfThreads;
 
-    // free queue.
-    //TODO: check if need to clear the queue like lidor lines 31-37
+    Task *task;
+    while (!osIsQueueEmpty(threadpool->osQueue)) {
+        task = osDequeue(threadpool->osQueue);
+        if (task != NULL) {
+            free(task);
+            task = NULL;
+        }
+    }
+
     osDestroyQueue(threadpool->osQueue);
     threadpool->osQueue = NULL;
 
@@ -31,8 +37,8 @@ void freeThreadPool(ThreadPool *threadpool) {
     }
 
     // destroy the cond and the mutex.
-    pthread_cond_destroy(&threadpool->cond);
     pthread_mutex_destroy(&threadpool->lock);
+    pthread_cond_destroy(&threadpool->cond);
     // mark as finished.
     threadpool->taskStatus = DONE;
     // free the threadpool itself.
@@ -72,7 +78,26 @@ void *threadFunction(void *func) {
             break;
         }
         // synronize the task running, so lock the next section:
-        
+        if (pthread_mutex_lock(&threadpool->lock) != 0) writeError(threadpool);
+
+        // waiting satus: if the queue is empty, will wait for tasks to be enqueued.
+        while (threadpool->taskStatus == NORMAL && osIsQueueEmpty(threadpool->osQueue)) {
+            pthread_cond_wait(&threadpool->cond, &threadpool->lock);
+        }
+
+        // if the queue is empty - unlock and continue
+        if (osIsQueueEmpty(threadpool->osQueue)) {
+            if (pthread_mutex_unlock(&threadpool->lock) != 0) writeError(threadpool);
+            continue;
+        }
+
+        //if there are task to run, get task and if its not null - unlock, run and free the task!
+        task = osDequeue(threadpool->osQueue);
+        if (task != NULL) {
+            if (pthread_mutex_unlock(&threadpool->lock) != 0) writeError(threadpool);
+            ((task->computeFunc))(task->param);
+            free(task);
+        }
     }
 }
 
@@ -87,8 +112,7 @@ void initThreadsArray(ThreadPool *tp, int numOfThreads) {
     tp->threadsArray = (pthread_t *) malloc(sizeof(pthread_t) * numOfThreads);
     tp->threadsArray == NULL ? writeError(tp) : NULL;
     for (; i < numOfThreads; ++i) {
-        // TODO: create threadFunc function which handle with tasks.
-        // pthread_create(&(tp->threadsArray[i]), NULL, threadFunc, (void *) tp)!=0? writeError(tp) : NULL;
+        pthread_create(&(tp->threadsArray[i]), NULL, threadFunction, (void *) tp) != 0 ? writeError(tp) : NULL;
     }
 }
 
@@ -130,14 +154,11 @@ ThreadPool *tpCreate(int numOfThreads) {
 void tpDestroy(ThreadPool *threadPool, int shouldWaitForTasks) {
     int i = 0;
     int size = threadPool->numOfThreads;
-    //TODO: CHECK IF NEED LINED 189-194 IN LIDOR C FILE.
     if (threadPool->taskStatus != NORMAL) {
-        if (pthread_mutex_unlock(&threadPool->lock) != 0) {
-            writeError(threadPool);
-        }
+        if (pthread_mutex_unlock(&threadPool->lock) != 0) writeError(threadPool);
         return;
     }
-    threadPool->taskStatus = shouldWaitForTasks == 0 ? DO_NOT_WAIT : WAIT;
+    threadPool->taskStatus = ((shouldWaitForTasks == 0) ? DO_NOT_WAIT : WAIT);
     // wake up all threads.
     pthread_cond_broadcast(&threadPool->cond);
     //wait for all threads to finish their jobs.
@@ -145,6 +166,7 @@ void tpDestroy(ThreadPool *threadPool, int shouldWaitForTasks) {
         pthread_join(threadPool->threadsArray[i], NULL);
     }
     freeThreadPool(threadPool);
+    threadPool = NULL;
 }
 
 /**
@@ -155,7 +177,7 @@ void tpDestroy(ThreadPool *threadPool, int shouldWaitForTasks) {
  * @return 0 if succeed -1 otherwise.
  */
 int tpInsertTask(ThreadPool *threadPool, void (*computeFunc)(void *), void *param) {
-    if (threadPool != NORMAL) return -1;
+    if (threadPool->taskStatus != NORMAL) return -1;
     else {
         // lock the mutex, if failed write error.
         if (pthread_mutex_lock(&threadPool->lock) != 0) {
